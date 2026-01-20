@@ -178,6 +178,7 @@ class ServiceNowCompatibleHandler:
             print(f"[HANDLER] Response text preview: {response_text[:200] if response_text else 'EMPTY'}")
             
             # Build ServiceNow-compatible response
+            # Include both 'message' and 'artifacts' for maximum compatibility
             response = {
                 "jsonrpc": "2.0",
                 "id": jsonrpc_id,
@@ -185,7 +186,16 @@ class ServiceNowCompatibleHandler:
                     "id": task_id,
                     "sessionId": session_id,
                     "status": {
-                        "state": "completed",
+                        "state": "completed"
+                    },
+                    "message": {
+                        "role": "agent",
+                        "parts": [
+                            {
+                                "type": "text",
+                                "text": response_text
+                            }
+                        ]
                     },
                     "artifacts": [
                         {
