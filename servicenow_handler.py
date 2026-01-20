@@ -9,16 +9,29 @@ This handler bridges the gap between ServiceNow and the standard A2A SDK.
 """
 import json
 import uuid
+import asyncio
 from typing import Any
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.agent_execution import AgentExecutor
+from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskStore
-from a2a.server.events import EventQueue, InMemoryEventQueue
-from a2a.server.agent_execution import RequestContext
-from a2a.types import Message, Part, TextPart
+from a2a.types import Message, TextPart
+
+
+class SimpleEventQueue:
+    """Simple event queue to collect agent responses."""
+    
+    def __init__(self):
+        self.events = []
+    
+    async def enqueue_event(self, event):
+        """Add an event to the queue."""
+        self.events.append(event)
+    
+    def get_events(self):
+        """Get all collected events."""
+        return self.events
 
 
 class ServiceNowCompatibleHandler:
@@ -34,10 +47,6 @@ class ServiceNowCompatibleHandler:
     def __init__(self, agent_executor: AgentExecutor, task_store: TaskStore):
         self.agent_executor = agent_executor
         self.task_store = task_store
-        self.default_handler = DefaultRequestHandler(
-            agent_executor=agent_executor,
-            task_store=task_store,
-        )
     
     async def handle_request(self, request: Request) -> JSONResponse:
         """Handle incoming JSON-RPC requests with ServiceNow compatibility."""
@@ -109,11 +118,8 @@ class ServiceNowCompatibleHandler:
             
             print(f"[HANDLER] Extracted text: '{text_content}'")
             
-            # Create a mock context for the executor
-            # We'll directly call the executor's internal methods
-            
             # Create event queue to collect responses
-            event_queue = InMemoryEventQueue()
+            event_queue = SimpleEventQueue()
             
             # Create a minimal request context
             context = self._create_request_context(text_content, task_id, session_id)
@@ -123,31 +129,56 @@ class ServiceNowCompatibleHandler:
             
             # Collect response from event queue
             response_text = ""
-            events = []
-            
-            # Drain the queue
-            while True:
-                try:
-                    event = event_queue.dequeue_event_nowait()
-                    if event is None:
-                        break
-                    events.append(event)
-                except:
-                    break
+            events = event_queue.get_events()
             
             # Extract text from events
             for event in events:
-                if hasattr(event, 'parts'):
+                print(f"[HANDLER] Event type: {type(event).__name__}")
+                print(f"[HANDLER] Event attrs: {dir(event)}")
+                
+                # Try multiple ways to extract text
+                # Method 1: parts attribute (Message object)
+                if hasattr(event, 'parts') and event.parts:
                     for part in event.parts:
-                        if hasattr(part, 'text'):
+                        print(f"[HANDLER] Part type: {type(part).__name__}")
+                        if hasattr(part, 'text') and part.text:
                             response_text = part.text
+                            print(f"[HANDLER] Found text in part.text")
                             break
-                elif hasattr(event, 'text'):
+                        # Try root attribute for TextPart
+                        if hasattr(part, 'root') and hasattr(part.root, 'text'):
+                            response_text = part.root.text
+                            print(f"[HANDLER] Found text in part.root.text")
+                            break
+                
+                # Method 2: direct text attribute
+                if not response_text and hasattr(event, 'text') and event.text:
                     response_text = event.text
+                    print(f"[HANDLER] Found text in event.text")
+                
+                # Method 3: Try to convert to dict
+                if not response_text:
+                    try:
+                        if hasattr(event, 'model_dump'):
+                            event_dict = event.model_dump()
+                            print(f"[HANDLER] Event dict: {event_dict}")
+                            if 'parts' in event_dict:
+                                for part in event_dict['parts']:
+                                    if isinstance(part, dict) and 'text' in part:
+                                        response_text = part['text']
+                                        print(f"[HANDLER] Found text in model_dump")
+                                        break
+                    except Exception as e:
+                        print(f"[HANDLER] model_dump error: {e}")
+                
+                if response_text:
+                    break
             
             print(f"[HANDLER] Response text length: {len(response_text)}")
+            print(f"[HANDLER] Response text preview: {response_text[:200] if response_text else 'EMPTY'}")
             
             # Build ServiceNow-compatible response
+            # Include both 'message' and 'artifacts' for maximum compatibility
             response = {
                 "jsonrpc": "2.0",
                 "id": jsonrpc_id,
@@ -155,7 +186,16 @@ class ServiceNowCompatibleHandler:
                     "id": task_id,
                     "sessionId": session_id,
                     "status": {
-                        "state": "completed",
+                        "state": "completed"
+                    },
+                    "message": {
+                        "role": "agent",
+                        "parts": [
+                            {
+                                "type": "text",
+                                "text": response_text
+                            }
+                        ]
                     },
                     "artifacts": [
                         {
@@ -170,6 +210,8 @@ class ServiceNowCompatibleHandler:
                 }
             }
             
+            print(f"[HANDLER] Full response: {json.dumps(response, indent=2)}")
+            
             return JSONResponse(response)
         
         except Exception as e:
@@ -179,15 +221,105 @@ class ServiceNowCompatibleHandler:
             return self._error_response(jsonrpc_id, -32603, f"Execution error: {str(e)}")
     
     async def _handle_message_send(self, jsonrpc_id: str, params: dict) -> JSONResponse:
-        """Handle standard A2A message/send method."""
-        # For standard A2A, we can use similar logic
-        # Convert to tasks/send format and reuse
-        converted_params = {
-            "id": str(uuid.uuid4()),
-            "sessionId": params.get("contextId"),
-            "message": params.get("message", {}),
+        """
+        Handle standard A2A message/send method.
+        
+        Standard A2A format:
+        {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "..."}],
+                "messageId": "..."
+            }
         }
-        return await self._handle_tasks_send(jsonrpc_id, converted_params)
+        """
+        try:
+            message_data = params.get("message", {})
+            
+            # Extract text from parts (standard A2A uses "kind" not "type")
+            text_content = ""
+            parts = message_data.get("parts", [])
+            for part in parts:
+                # Handle both "kind" (standard A2A) and "type" (ServiceNow)
+                part_kind = part.get("kind") or part.get("type")
+                if part_kind == "text":
+                    text_content = part.get("text", "")
+                    break
+            
+            print(f"[HANDLER] message/send - Extracted text: '{text_content}'")
+            
+            task_id = str(uuid.uuid4())
+            context_id = params.get("contextId") or str(uuid.uuid4())
+            
+            # Create event queue to collect responses
+            event_queue = SimpleEventQueue()
+            
+            # Create a minimal request context
+            context = self._create_request_context(text_content, task_id, context_id)
+            
+            # Execute the agent
+            await self.agent_executor.execute(context, event_queue)
+            
+            # Collect response from event queue
+            response_text = ""
+            events = event_queue.get_events()
+            
+            # Extract text from events
+            for event in events:
+                print(f"[HANDLER] Event type: {type(event).__name__}")
+                
+                if hasattr(event, 'parts') and event.parts:
+                    for part in event.parts:
+                        if hasattr(part, 'text') and part.text:
+                            response_text = part.text
+                            break
+                        if hasattr(part, 'root') and hasattr(part.root, 'text'):
+                            response_text = part.root.text
+                            break
+                
+                if not response_text:
+                    try:
+                        if hasattr(event, 'model_dump'):
+                            event_dict = event.model_dump()
+                            if 'parts' in event_dict:
+                                for part in event_dict['parts']:
+                                    if isinstance(part, dict) and 'text' in part:
+                                        response_text = part['text']
+                                        break
+                    except:
+                        pass
+                
+                if response_text:
+                    break
+            
+            print(f"[HANDLER] message/send - Response text length: {len(response_text)}")
+            
+            # Build standard A2A response format
+            response = {
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "result": {
+                    "kind": "message",
+                    "messageId": str(uuid.uuid4()),
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": response_text
+                        }
+                    ]
+                }
+            }
+            
+            print(f"[HANDLER] message/send response: {json.dumps(response, indent=2)[:500]}")
+            
+            return JSONResponse(response)
+        
+        except Exception as e:
+            print(f"[HANDLER ERROR] message/send: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return self._error_response(jsonrpc_id, -32603, f"Execution error: {str(e)}")
     
     async def _handle_tasks_get(self, jsonrpc_id: str, params: dict) -> JSONResponse:
         """Handle tasks/get method."""
