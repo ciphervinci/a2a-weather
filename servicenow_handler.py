@@ -175,6 +175,7 @@ class ServiceNowCompatibleHandler:
                     break
             
             print(f"[HANDLER] Response text length: {len(response_text)}")
+            print(f"[HANDLER] Response text preview: {response_text[:200] if response_text else 'EMPTY'}")
             
             # Build ServiceNow-compatible response
             response = {
@@ -198,6 +199,8 @@ class ServiceNowCompatibleHandler:
                     ]
                 }
             }
+            
+            print(f"[HANDLER] Full response: {json.dumps(response, indent=2)}")
             
             return JSONResponse(response)
         
