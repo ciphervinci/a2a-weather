@@ -156,7 +156,7 @@ def get_agent_card(host: str, port: int) -> AgentCard:
     return agent_card
 
 
-def create_app(host: str = "0.0.0.0", port: int = 8000):
+def create_app(host: str = "0.0.0.0", port: int = 8003):
     """Create and configure the A2A Starlette application with ServiceNow compatibility."""
     
     # Create agent executor and handler
