@@ -1,0 +1,21 @@
+# Render Blueprint for A2A Weather Agent
+services:
+  - type: web
+    name: a2a-weather-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: OPENWEATHER_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: GEMINI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: HOST_URL
+        fromService:
+          name: a2a-weather-agent
+          type: web
+          property: host
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /.well-known/agent.json
