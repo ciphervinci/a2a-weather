@@ -9,16 +9,29 @@ This handler bridges the gap between ServiceNow and the standard A2A SDK.
 """
 import json
 import uuid
+import asyncio
 from typing import Any
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.agent_execution import AgentExecutor
+from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskStore
-from a2a.server.events import EventQueue, InMemoryEventQueue
-from a2a.server.agent_execution import RequestContext
-from a2a.types import Message, Part, TextPart
+from a2a.types import Message, TextPart
+
+
+class SimpleEventQueue:
+    """Simple event queue to collect agent responses."""
+    
+    def __init__(self):
+        self.events = []
+    
+    async def enqueue_event(self, event):
+        """Add an event to the queue."""
+        self.events.append(event)
+    
+    def get_events(self):
+        """Get all collected events."""
+        return self.events
 
 
 class ServiceNowCompatibleHandler:
@@ -34,10 +47,6 @@ class ServiceNowCompatibleHandler:
     def __init__(self, agent_executor: AgentExecutor, task_store: TaskStore):
         self.agent_executor = agent_executor
         self.task_store = task_store
-        self.default_handler = DefaultRequestHandler(
-            agent_executor=agent_executor,
-            task_store=task_store,
-        )
     
     async def handle_request(self, request: Request) -> JSONResponse:
         """Handle incoming JSON-RPC requests with ServiceNow compatibility."""
@@ -109,11 +118,8 @@ class ServiceNowCompatibleHandler:
             
             print(f"[HANDLER] Extracted text: '{text_content}'")
             
-            # Create a mock context for the executor
-            # We'll directly call the executor's internal methods
-            
             # Create event queue to collect responses
-            event_queue = InMemoryEventQueue()
+            event_queue = SimpleEventQueue()
             
             # Create a minimal request context
             context = self._create_request_context(text_content, task_id, session_id)
@@ -123,17 +129,7 @@ class ServiceNowCompatibleHandler:
             
             # Collect response from event queue
             response_text = ""
-            events = []
-            
-            # Drain the queue
-            while True:
-                try:
-                    event = event_queue.dequeue_event_nowait()
-                    if event is None:
-                        break
-                    events.append(event)
-                except:
-                    break
+            events = event_queue.get_events()
             
             # Extract text from events
             for event in events:
