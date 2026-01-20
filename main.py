@@ -2,8 +2,12 @@
 A2A Weather Agent Server - Main Entry Point
 """
 import os
+import json
 import uvicorn
 from dotenv import load_dotenv
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -14,6 +18,36 @@ from agent_executor import WeatherAgentExecutor
 from weather_agent import WeatherAgent
 
 load_dotenv()
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware to log incoming requests for debugging."""
+    
+    async def dispatch(self, request: Request, call_next):
+        # Log request details
+        print(f"\n{'='*60}")
+        print(f"[REQUEST] {request.method} {request.url.path}")
+        print(f"[HEADERS] Content-Type: {request.headers.get('content-type')}")
+        
+        # Read and log body for POST requests
+        if request.method == "POST":
+            body = await request.body()
+            try:
+                json_body = json.loads(body)
+                print(f"[BODY] Method: {json_body.get('method', 'N/A')}")
+                print(f"[BODY] Full request: {json.dumps(json_body, indent=2)[:500]}")
+            except:
+                print(f"[BODY] Raw: {body[:200]}")
+            
+            # Recreate request with body (since we consumed it)
+            async def receive():
+                return {"type": "http.request", "body": body}
+            request = Request(request.scope, receive)
+        
+        print(f"{'='*60}\n")
+        
+        response = await call_next(request)
+        return response
 
 
 def get_agent_card(host: str, port: int) -> AgentCard:
@@ -148,7 +182,7 @@ def get_agent_card(host: str, port: int) -> AgentCard:
     return agent_card
 
 
-def create_app(host: str = "0.0.0.0", port: int = 8002):
+def create_app(host: str = "0.0.0.0", port: int = 8000):
     """Create and configure the A2A Starlette application."""
     
     agent_executor = WeatherAgentExecutor()
@@ -158,12 +192,17 @@ def create_app(host: str = "0.0.0.0", port: int = 8002):
         task_store=InMemoryTaskStore(),
     )
     
-    app = A2AStarletteApplication(
+    a2a_app = A2AStarletteApplication(
         agent_card=get_agent_card(host, port),
         http_handler=request_handler,
     )
     
-    return app.build()
+    app = a2a_app.build()
+    
+    # Add logging middleware for debugging
+    app.add_middleware(RequestLoggingMiddleware)
+    
+    return app
 
 
 def validate_environment():
