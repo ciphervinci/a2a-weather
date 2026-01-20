@@ -133,13 +133,46 @@ class ServiceNowCompatibleHandler:
             
             # Extract text from events
             for event in events:
-                if hasattr(event, 'parts'):
+                print(f"[HANDLER] Event type: {type(event).__name__}")
+                print(f"[HANDLER] Event attrs: {dir(event)}")
+                
+                # Try multiple ways to extract text
+                # Method 1: parts attribute (Message object)
+                if hasattr(event, 'parts') and event.parts:
                     for part in event.parts:
-                        if hasattr(part, 'text'):
+                        print(f"[HANDLER] Part type: {type(part).__name__}")
+                        if hasattr(part, 'text') and part.text:
                             response_text = part.text
+                            print(f"[HANDLER] Found text in part.text")
                             break
-                elif hasattr(event, 'text'):
+                        # Try root attribute for TextPart
+                        if hasattr(part, 'root') and hasattr(part.root, 'text'):
+                            response_text = part.root.text
+                            print(f"[HANDLER] Found text in part.root.text")
+                            break
+                
+                # Method 2: direct text attribute
+                if not response_text and hasattr(event, 'text') and event.text:
                     response_text = event.text
+                    print(f"[HANDLER] Found text in event.text")
+                
+                # Method 3: Try to convert to dict
+                if not response_text:
+                    try:
+                        if hasattr(event, 'model_dump'):
+                            event_dict = event.model_dump()
+                            print(f"[HANDLER] Event dict: {event_dict}")
+                            if 'parts' in event_dict:
+                                for part in event_dict['parts']:
+                                    if isinstance(part, dict) and 'text' in part:
+                                        response_text = part['text']
+                                        print(f"[HANDLER] Found text in model_dump")
+                                        break
+                    except Exception as e:
+                        print(f"[HANDLER] model_dump error: {e}")
+                
+                if response_text:
+                    break
             
             print(f"[HANDLER] Response text length: {len(response_text)}")
             
