@@ -1,0 +1,42 @@
+# Render Blueprint for A2A Weather Agent
+# ServiceNow A2A Compatible Configuration
+
+services:
+  - type: web
+    name: a2a-weather-agent
+    runtime: python
+    plan: free  # Note: Free tier has cold starts. Consider "starter" for production
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    
+    # Environment variables
+    envVars:
+      # Required API Keys
+      - key: OPENWEATHER_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: GEMINI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      
+      # Optional: API Key for authenticating A2A requests from ServiceNow
+      - key: A2A_API_KEY
+        sync: false  # Set manually - use this in ServiceNow as x-sn-apikey header
+      
+      # Public URL - Render provides this automatically
+      - key: HOST_URL
+        fromService:
+          name: a2a-weather-agent
+          type: web
+          property: host
+      
+      # Python version
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+    
+    # Health check for availability monitoring
+    healthCheckPath: /health
+    
+    # Autoscaling settings (for paid plans)
+    # autoscaling:
+    #   minInstances: 1
+    #   maxInstances: 3
+    #   targetCPUPercent: 75
